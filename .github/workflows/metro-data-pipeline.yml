@@ -9,7 +9,7 @@ on:
       - '.github/workflows/**'
 
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/5 * * * *'
 
   # 수동 실행
   workflow_dispatch:
