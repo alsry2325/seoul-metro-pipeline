@@ -71,6 +71,7 @@ def save_to_json(data: dict, output_dir: str = None) -> str:
 
     # raw 서브디렉토리에 저장 (GitHub Actions 워크플로우와 일치)
     raw_dir = Path(output_dir) / "raw"
+    
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
