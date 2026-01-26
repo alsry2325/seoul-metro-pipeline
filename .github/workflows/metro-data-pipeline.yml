@@ -48,7 +48,7 @@ jobs:
           STATIONS: ${{ github.event.inputs.stations || '서울,강남,홍대입구' }}
           DATA_DIR: ${{ env.DATA_DIR }}
         run: |
-          python src/collector.py
+          python -m src.collector
           echo "files=$(ls ${{ env.DATA_DIR }}/raw/*.json 2>/dev/null | wc -l)" >> $GITHUB_OUTPUT
 
       - name: Upload raw data
@@ -82,7 +82,7 @@ jobs:
       - name: Process data
         env:
           DATA_DIR: ${{ env.DATA_DIR }}
-        run: python src/processor.py
+        run: python -m src.processor
 
       - name: Upload processed data
         uses: actions/upload-artifact@v4
