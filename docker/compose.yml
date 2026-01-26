@@ -1,0 +1,196 @@
+services:
+  # ============================================
+  # Kafka 인프라 (KRaft 모드 - Zookeeper 불필요)
+  # ============================================
+
+  kafka:
+    image: apache/kafka:4.1.1
+    container_name: metro-kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft 모드 설정
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # 단일 브로커 환경 설정
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: metro-pipeline-cluster-001
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - metro-network
+
+  # Kafka 웹 UI (모니터링용)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: metro-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: metro-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - metro-network
+
+  # ============================================
+  # 애플리케이션 서비스
+  # ============================================
+
+  producer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../src:/app
+    env_file:
+      - ../.env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    working_dir: /app
+    command: python kafka_producer.py  # ⚠️ src/ 없음! 볼륨 마운트로 /app에 직접 복사됨
+    networks:
+      - metro-network
+
+  consumer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../src:/app
+      - ../data:/data
+    env_file:
+      - ../.env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    working_dir: /app
+    command: python kafka_consumer.py  # ⚠️ src/ 없음! 볼륨 마운트로 /app에 직접 복사됨
+    networks:
+      - metro-network
+
+  # ============================================
+  # Phase 4: Spark 분산 처리
+  # ============================================
+  # spark-class: JVM 설정으로 Spark 클래스를 실행하는 스크립트
+  # spark-submit: Spark 애플리케이션을 클러스터에 제출하는 명령어
+
+  spark-master:
+    image: apache/spark:3.5.8
+    container_name: metro-spark-master
+    hostname: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "7077:7077"   # Master 포트 (Worker/Driver 연결용)
+      - "4040:4040"   # Spark Application UI (앱 실행 중에만)
+      - "8081:8080"   # Master Web UI
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8080
+    volumes:
+      - ../data:/data
+      - ../src:/app
+    networks:
+      - metro-network
+
+  spark-worker:
+    image: apache/spark:3.5.8
+    container_name: metro-spark-worker
+    hostname: spark-worker
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_CORES: 2
+    depends_on:
+      - spark-master
+    volumes:
+      - ../data:/data
+      - ../src:/app
+    networks:
+      - metro-network
+
+  # ============================================
+  # Spark 배치 처리
+  # 실행: docker compose run --rm spark-batch
+  # ============================================
+  spark-batch:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.spark
+    container_name: metro-spark-batch
+    command: >
+      /opt/spark/bin/spark-submit
+      --master spark://spark-master:7077
+      /app/spark_batch.py
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ../data:/data
+      - ../src:/app
+      - ../output:/output  # Spark 분석 결과 저장
+    depends_on:
+      - spark-master
+    networks:
+      - metro-network
+
+  # ============================================
+  # Spark Structured Streaming (실시간 처리)
+  # 실행: docker compose run --rm spark-streaming
+  # ============================================
+  spark-streaming:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.spark
+    container_name: metro-spark-streaming
+    command: >
+      /opt/spark/bin/spark-submit
+      --master spark://spark-master:7077
+      /app/spark_streaming.py
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ../data:/data
+      - ../src:/app
+      - ../output:/output
+    depends_on:
+      - spark-master
+      - kafka
+    networks:
+      - metro-network
+
+# ============================================
+# 네트워크 정의 (Kafka, Spark 간 통신용)
+# ============================================
+volumes:
+  kafka-data:
+
+networks:
+  metro-network:
+    driver: bridge
