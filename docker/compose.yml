@@ -145,7 +145,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.spark
     container_name: metro-spark-batch
-    command: >
+    command: 
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
       /app/spark_batch.py
